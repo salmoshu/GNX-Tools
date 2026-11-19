@@ -1,6 +1,20 @@
+// @see https://www.electron.build/configuration/configuration
 {
   appId: "com.gnx.flashtool",
   productName: "GNX Tools",
+  releaseInfo: {
+    // 更新日志随 latest.yml 下发，客户端按版本号截取对应小节
+    releaseNotesFile: "release-notes.md"
+  },
+  publish: [
+    {
+      provider: "github",
+      owner: "salmoshu",
+      repo: "GNX-Tools",
+      // 直接发布正式 Release，保证安装包和 latest.yml 对客户端可见
+      releaseType: "release"
+    }
+  ],
   directories: {
     output: "release"
   },
@@ -14,7 +28,8 @@
   ],
   win: {
     icon: "build/icon.ico",
-    target: ["nsis"]
+    target: ["nsis"],
+    artifactName: "GNX-Tools-${version}-Setup.${ext}"
   },
   nsis: {
     oneClick: false,

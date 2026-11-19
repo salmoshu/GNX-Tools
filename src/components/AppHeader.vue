@@ -4,7 +4,7 @@
       <img :src="iconUrl" alt="" class="brand-logo" />
       <span class="brand-copy">
         <span class="brand-name">GNX Tools</span>
-        <span class="brand-version">V1.0.0</span>
+        <span class="brand-version">V{{ version }}</span>
       </span>
     </div>
     <div class="header-controls" @dblclick.stop>
@@ -32,7 +32,7 @@ import { ElMessageBox } from 'element-plus'
 import { Close, CopyDocument, FullScreen, Minus } from '@element-plus/icons-vue'
 import iconUrl from '../assets/icon.svg'
 
-const props = defineProps<{ busy: boolean }>()
+const props = defineProps<{ busy: boolean; version: string }>()
 const maximized = ref(false)
 let unsubscribe: (() => void) | undefined
 

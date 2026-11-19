@@ -6,6 +6,7 @@ import type {
   FlashRequest,
   GnxApi,
 } from '../../shared/flash'
+import type { UpdateStatusEvent, UpdaterApi, UpdaterPrefs } from '../../shared/update'
 
 const api: GnxApi = {
   listPorts: () => ipcRenderer.invoke('ports:list'),
@@ -34,3 +35,18 @@ const api: GnxApi = {
 }
 
 contextBridge.exposeInMainWorld('gnx', api)
+
+const updater: UpdaterApi = {
+  getVersion: () => ipcRenderer.invoke('app:version'),
+  checkForUpdates: () => ipcRenderer.invoke('update:check'),
+  downloadUpdate: () => ipcRenderer.invoke('update:download'),
+  quitAndInstall: () => ipcRenderer.invoke('update:install'),
+  setPrefs: (prefs: UpdaterPrefs) => ipcRenderer.send('update:prefs', prefs),
+  onStatus: (listener: (event: UpdateStatusEvent) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, value: UpdateStatusEvent) => listener(value)
+    ipcRenderer.on('update:status', wrapped)
+    return () => ipcRenderer.off('update:status', wrapped)
+  },
+}
+
+contextBridge.exposeInMainWorld('updater', updater)

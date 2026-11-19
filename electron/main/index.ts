@@ -9,6 +9,7 @@ import type {
   FirmwareFile,
 } from '../../shared/flash'
 import { FlashService } from './FlashService'
+import { UpdateService } from './UpdateService'
 
 app.setName('GNX Tools')
 if (process.platform === 'win32') app.setAppUserModelId('com.gnx.flashtool')
@@ -21,6 +22,7 @@ const flashService = new FlashService((event) => {
     if (!window.isDestroyed()) window.webContents.send('flash-event', event)
   }
 })
+const updateService = new UpdateService()
 
 function createWindow(): void {
   const rendererDist = path.join(process.env.APP_ROOT!, 'dist')
@@ -44,6 +46,7 @@ function createWindow(): void {
     },
   })
   window.once('ready-to-show', () => window.show())
+  updateService.attach(window.webContents)
   const sendWindowState = () => {
     if (!window.isDestroyed()) {
       window.webContents.send('window:state', { maximized: window.isMaximized() })
@@ -68,6 +71,11 @@ ipcMain.handle('device:enter', (_event, request: EntryRequest) => flashService.e
 ipcMain.handle('device:command', (_event, request: CommandRequest) => flashService.command(request))
 ipcMain.handle('firmware:flash', (_event, request: FlashRequest) => flashService.flash(request))
 ipcMain.handle('operation:cancel', () => flashService.cancel())
+ipcMain.handle('app:version', () => app.getVersion())
+ipcMain.handle('update:check', () => updateService.checkForUpdates())
+ipcMain.handle('update:download', () => updateService.downloadUpdate())
+ipcMain.handle('update:install', () => updateService.quitAndInstall())
+ipcMain.on('update:prefs', (_event, prefs) => updateService.applyPrefs(prefs))
 ipcMain.handle('window:minimize', (event) => {
   BrowserWindow.fromWebContents(event.sender)?.minimize()
 })

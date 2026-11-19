@@ -1,6 +1,6 @@
 <template>
   <div class="app-shell">
-    <AppHeader :busy="snapshot.busy" />
+    <AppHeader :busy="snapshot.busy" :version="appVersion" />
 
     <div class="body-layout">
       <aside class="sidebar">
@@ -21,16 +21,16 @@
 
       <main class="workspace">
         <FirmwarePanel
-          v-if="activePage !== 'control'"
-          :kind="activePage"
-          :file="files[activePage]"
+          v-if="activePage !== 'control' && activePage !== 'update'"
+          :kind="firmwarePage"
+          :file="files[firmwarePage]"
           :busy="snapshot.busy"
           :enabled="canOperate"
           @choose="chooseFileForPage"
           @start="startFlash"
         />
 
-        <section v-else class="control-page">
+        <section v-else-if="activePage === 'control'" class="control-page">
           <div class="control-intro"><h1>设备控制</h1></div>
           <div class="control-grid">
             <section class="control-section">
@@ -80,7 +80,19 @@
           </div>
         </section>
 
-        <el-card v-if="showProgress" shadow="never" class="progress-card">
+        <UpdatePanel
+          v-else
+          :version="appVersion"
+          :event="updateEvent"
+          :prefs="updatePrefs"
+          @check="checkForUpdates"
+          @download="downloadUpdate"
+          @install="installUpdate"
+          @ignore="ignoreUpdateVersion"
+          @set-prefs="setUpdatePrefs"
+        />
+
+        <el-card v-if="showProgress && activePage !== 'update'" shadow="never" class="progress-card">
           <div class="progress-heading">
             <div class="progress-title">{{ snapshot.message }}</div>
             <el-button v-if="snapshot.busy" type="danger" plain @click="cancelOperation">
@@ -100,7 +112,7 @@
           </div>
         </el-card>
 
-        <el-card shadow="never" class="log-card">
+        <el-card v-if="activePage !== 'update'" shadow="never" class="log-card">
           <template #header>
             <div class="log-heading">
               <div class="log-title"><span>运行日志</span></div>
@@ -141,6 +153,13 @@
       @disconnect="disconnectSerial"
       @refresh="refreshPorts"
     />
+    <UpdatePrompt
+      v-if="updatePromptEvent"
+      :event="updatePromptEvent"
+      @download="downloadUpdate"
+      @install="installUpdate"
+      @dismiss="dismissUpdatePrompt"
+    />
   </div>
 </template>
 
@@ -154,13 +173,18 @@ import {
   Delete,
   Download,
   Operation,
+  Refresh,
   Upload,
 } from '@element-plus/icons-vue'
 import AppHeader from './components/AppHeader.vue'
 import ConnectionDialog from './components/ConnectionDialog.vue'
 import FirmwarePanel from './components/FirmwarePanel.vue'
 import StatusBar from './components/StatusBar.vue'
+import UpdatePanel from './components/UpdatePanel.vue'
+import UpdatePrompt from './components/UpdatePrompt.vue'
 import { notify } from './utils/notify'
+import { compareVersions } from './utils/version'
+import type { UpdateStatusEvent, UpdaterPrefs } from '../shared/update'
 import {
   BOOT_BAUD_RATE,
   EMPTY_FLASH_SNAPSHOT,
@@ -174,13 +198,15 @@ import {
   type SerialSettings,
 } from '../shared/flash'
 
-type PageId = 'host' | 'gnss' | 'loader' | 'control'
+type FirmwarePage = 'host' | 'gnss' | 'loader'
+type PageId = FirmwarePage | 'control' | 'update'
 
 const navigation = [
   { id: 'host' as const, label: 'HOST 固件', icon: Download },
   { id: 'gnss' as const, label: 'GNSS 固件', icon: Compass },
   { id: 'loader' as const, label: 'Loader 更新', icon: Upload },
   { id: 'control' as const, label: '设备控制', icon: Operation },
+  { id: 'update' as const, label: '版本更新', icon: Refresh },
 ]
 const activePage = ref<PageId>('host')
 const ports = ref<SerialPortInfo[]>([])
@@ -189,7 +215,7 @@ const settings = reactive<SerialSettings>({
   bootBaudRate: Number(localStorage.getItem('gnx-boot-baud')) || BOOT_BAUD_RATE,
   loaderBaudRate: Number(localStorage.getItem('gnx-loader-baud')) || LOADER_BAUD_RATE,
 })
-const files = reactive<Record<'host' | 'gnss' | 'loader', FirmwareFile | null>>({
+const files = reactive<Record<FirmwarePage, FirmwareFile | null>>({
   host: restoreFile('host'),
   gnss: restoreFile('gnss'),
   loader: restoreFile('loader'),
@@ -200,9 +226,26 @@ const logsCollapsed = ref(false)
 const logElement = ref<HTMLElement | null>(null)
 const customCommand = ref('')
 const connectionVisible = ref(false)
+const appVersion = ref('1.0.1')
+const updateEvent = ref<UpdateStatusEvent | null>(null)
+const updatePrefs = reactive<UpdaterPrefs>(loadUpdatePrefs())
+const updatePromptDismissed = ref(false)
+let availableRelease: { version?: string; notes?: string } | null = null
 let unsubscribe: (() => void) | undefined
+let unsubscribeUpdate: (() => void) | undefined
 
+const firmwarePage = computed(() => activePage.value as FirmwarePage)
 const canOperate = computed(() => Boolean(selectedPort.value) && !snapshot.value.busy)
+const updatePromptEvent = computed<UpdateStatusEvent | null>(() => {
+  if (activePage.value === 'update' || updatePromptDismissed.value) return null
+  const event = updateEvent.value
+  if (!event) return null
+  if (event.type === 'update-downloaded') return event
+  if (event.type === 'update-available' && !updatePrefs.autoDownload) {
+    return isIgnoredVersion(event.version) ? null : event
+  }
+  return null
+})
 const progressStatus = computed(() => {
   if (snapshot.value.phase === 'success') return 'success'
   if (snapshot.value.phase === 'error' || snapshot.value.phase === 'cancelled') return 'exception'
@@ -213,6 +256,11 @@ const showProgress = computed(
 )
 
 onMounted(async () => {
+  if (window.updater) {
+    appVersion.value = await window.updater.getVersion()
+    window.updater.setPrefs({ ...updatePrefs })
+    unsubscribeUpdate = window.updater.onStatus(handleUpdateStatus)
+  }
   if (!window.gnx) {
     notify('error', '运行环境错误', '请在 Electron 桌面应用中运行本工具')
     return
@@ -234,7 +282,10 @@ onMounted(async () => {
   await refreshPorts()
 })
 
-onUnmounted(() => unsubscribe?.())
+onUnmounted(() => {
+  unsubscribe?.()
+  unsubscribeUpdate?.()
+})
 
 async function refreshPorts(): Promise<void> {
   try {
@@ -292,7 +343,7 @@ async function enterMode(mode: EntryMode): Promise<void> {
 }
 
 async function chooseFileForPage(): Promise<void> {
-  if (activePage.value === 'control') return
+  if (activePage.value === 'control' || activePage.value === 'update') return
   await chooseFile(activePage.value)
 }
 
@@ -430,14 +481,97 @@ function notifyPhase(previous: FlashSnapshot['phase'], current: FlashSnapshot): 
   }
 }
 
-function showError(error: unknown): void {
+function errorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
-  notify(
-    'error',
-    '操作失败',
-    message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, ''),
-    10000,
-  )
+  return message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '')
+}
+
+function showError(error: unknown): void {
+  notify('error', '操作失败', errorMessage(error), 10000)
+}
+
+function loadUpdatePrefs(): UpdaterPrefs {
+  try {
+    const raw = localStorage.getItem('gnx-updater-prefs')
+    if (raw) {
+      const value = JSON.parse(raw) as Partial<UpdaterPrefs>
+      return {
+        autoCheck: value.autoCheck !== false,
+        autoDownload: value.autoDownload !== false,
+        ignoredVersion:
+          typeof value.ignoredVersion === 'string' && value.ignoredVersion
+            ? value.ignoredVersion
+            : undefined,
+      }
+    }
+  } catch {
+    // 读取失败时使用默认偏好
+  }
+  return { autoCheck: true, autoDownload: true }
+}
+
+function handleUpdateStatus(event: UpdateStatusEvent): void {
+  let next = event
+  if (event.type === 'update-available') {
+    availableRelease = { version: event.version, notes: event.releaseNotes }
+    updatePromptDismissed.value = false
+  }
+  if (event.type === 'download-progress' || event.type === 'update-downloaded') {
+    next = {
+      ...event,
+      version: event.version ?? availableRelease?.version,
+      releaseNotes: event.releaseNotes ?? availableRelease?.notes,
+    }
+    if (event.type === 'update-downloaded') updatePromptDismissed.value = false
+  }
+  updateEvent.value = next
+}
+
+function isIgnoredVersion(version?: string): boolean {
+  if (!version || !updatePrefs.ignoredVersion) return false
+  return compareVersions(version, updatePrefs.ignoredVersion) <= 0
+}
+
+function setUpdatePrefs(patch: Partial<UpdaterPrefs>): void {
+  Object.assign(updatePrefs, patch)
+  localStorage.setItem('gnx-updater-prefs', JSON.stringify(updatePrefs))
+  window.updater?.setPrefs({ ...updatePrefs })
+}
+
+async function checkForUpdates(): Promise<void> {
+  if (!window.updater) {
+    notify('error', '更新不可用', '请在 Electron 桌面应用中运行本工具')
+    return
+  }
+  try {
+    updateEvent.value = { type: 'checking' }
+    await window.updater.checkForUpdates()
+  } catch (error) {
+    notify('error', '检查更新失败', errorMessage(error), 10000)
+  }
+}
+
+async function downloadUpdate(): Promise<void> {
+  if (!window.updater) return
+  try {
+    await window.updater.downloadUpdate()
+  } catch (error) {
+    notify('error', '下载更新失败', errorMessage(error), 10000)
+  }
+}
+
+function installUpdate(): void {
+  void window.updater?.quitAndInstall()
+}
+
+function ignoreUpdateVersion(): void {
+  const version = updateEvent.value?.version
+  updatePromptDismissed.value = true
+  if (version) setUpdatePrefs({ ignoredVersion: version })
+}
+
+function dismissUpdatePrompt(): void {
+  updatePromptDismissed.value = true
 }
 </script>
 

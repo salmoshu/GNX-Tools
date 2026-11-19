@@ -1,6 +1,6 @@
 {
   "name": "gnx-flash-tool",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "GNX UART Boot/Loader firmware flashing tool",
   "main": "dist-electron/main/index.js",
@@ -10,12 +10,14 @@
     "dev": "vite",
     "build": "pnpm run build:dir && electron-builder",
     "build:dir": "vue-tsc --noEmit && tsc -p tsconfig.node.json --noEmit && vite build",
+    "publish": "pnpm run build:dir && electron-builder --publish always",
     "pack:dir": "pnpm run build:dir && electron-builder --dir",
     "typecheck": "vue-tsc --noEmit && tsc -p tsconfig.node.json --noEmit",
     "preview": "vite preview"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
+    "electron-updater": "^6.8.11",
     "element-plus": "^2.11.2",
     "serialport": "^13.0.0",
     "vue": "^3.5.13"
